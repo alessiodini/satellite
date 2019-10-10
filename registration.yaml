@@ -1,0 +1,156 @@
+---
+# Alessio Dini
+# 26/09/2019
+# Playbook for Red Hat Satellite automatic registration
+# Parameters expected: ip of the remote capsule, hostname of the remote capsule, activation key, organization.
+# Example: ansible-playbook satellite.yaml -e "host_capsule=capsule-italy.it ip_capsule=12.19.25.15 key=rhel org=test"
+
+- name: Satellite Registration Playbook
+  gather_facts: false
+  hosts: hosts
+  vars:
+    ansible_ssh_pass: password
+    ansible_become_pass: password
+  tasks:
+
+    - name: Check network connectivity to {{ host_capsule }}
+      wait_for:
+        host: "{{ ip_capsule }}"
+        port: "{{ item }}"
+        state: started
+        delay: 0
+        timeout: 3
+      ignore_errors: true
+      with_items:
+        - 80
+        - 443
+        - 8443
+        - 8140
+        - 5647
+        - 5671
+      register: net
+
+
+    - name: Commenting out proxy on /etc/yum.conf
+      replace:
+        path: /etc/yum.conf
+        regexp: '^proxy'
+        replace: '#proxy'
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Commenting out proxy on /etc/rhsm/rhsm.conf
+      replace:
+        path: /etc/rhsm/rhsm.conf
+        regexp: '^proxy'
+        replace: '#proxy'
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Checking proxy in the env
+      shell: env | grep -i http
+      register: proxy
+      failed_when: proxy == 0
+      when: net|success
+
+
+    - name: Checking /etc/hosts contents
+      lineinfile:
+        path: /etc/hosts
+        regexp: '.*capsule.*'
+        line: '#'
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Updating /etc/hosts contents with {{ host_capsule }} line
+      lineinfile:
+        dest: /etc/hosts
+        line: "{{ ip_capsule }} {{ host_capsule }}"
+        state: present
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Removing any katello package
+      yum:
+        name: "*katello*"
+        state: absent
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Removing any insight package
+      yum:
+        name: "insights-client"
+        state: absent
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Downloading katello agent from {{ host_capsule }}
+      yum:
+        name: "http://{{ host_capsule }}/pub/katello-ca-consumer-latest.noarch.rpm"
+        state: present
+      become: true
+      become_method: sudo
+      register: katello
+      when: net|success
+
+
+    - name: Registering the system against {{ host_capsule }}
+      redhat_subscription:
+        state: present
+        activationkey: "{{ key }}"
+        org_id: "{{ org }}"
+      become: true
+      become_method: sudo
+      when:
+        - net|success
+        - katello|success
+
+
+    - name: Checking active YUM repositories
+      shell: yum repolist | grep -v This | grep server
+      register: repolist
+      failed_when: repolist == 1
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Installing katello-agent
+      yum:
+        name: katello-agent
+        state: present
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Installing insights client
+      yum:
+        name: insights-client
+        state: present
+      become: true
+      become_method: sudo
+      when: net|success
+
+
+    - name: Collecting insights client data
+      shell: insights-client --register
+      become: true
+      become_method: sudo
+      when: net|success
+      register: insight
+
+    - debug:
+        var: "{{ insight }}"
