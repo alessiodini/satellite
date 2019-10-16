@@ -153,4 +153,4 @@
       register: insight
 
     - debug:
-        var: "{{ insight }}"
+        var: "{{ insight.stdout }}"
